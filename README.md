@@ -1,195 +1,168 @@
 
-            import pandas as pd
-            import numpy as np
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-            from sklearn.model_selection import train_test_split, GridSearchCV
-            from sklearn.preprocessing import LabelEncoder, StandardScaler
-            from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor, HistGradientBoostingRegressor
-            from sklearn.linear_model import Ridge, Lasso
-            from sklearn.neural_network import MLPRegressor
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-            import joblib
 
-            # Optional libraries
-            try:
-                import shap
-            except ImportError:
-                shap = None
+---
 
-            try:
-                import xgboost as xgb
-            except ImportError:
-                xgb = None
+## 1. Business Objective
 
-            try:
-                from catboost import CatBoostRegressor
-            except ImportError:
-                CatBoostRegressor = None
+Accurately estimate the total processing time per request.
 
-            try:
-                from lightgbm import LGBMRegressor
-            except ImportError:
-                LGBMRegressor = None
+**Primary KPI:** R² (explained variance)  
+**Secondary KPIs:** RMSE & MAE
 
-            # -----------------------------
-            # 1. Load CSV files
-            # -----------------------------
-            claims_df = pd.read_csv('Claims_Rework_ProcessTable last 10 days.csv')
-            reporting_df = pd.read_csv('ReportingTable_claims_rework last 10 days.csv')
+---
 
-            # -----------------------------
-            # 2. Clean column names and values
-            # -----------------------------
-            claims_df.columns = claims_df.columns.str.strip()
-            reporting_df.columns = reporting_df.columns.str.strip()
-            claims_df = claims_df.apply(lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x))
-            reporting_df = reporting_df.apply(lambda col: col.map(lambda x: x.strip() if isinstance(x, str) else x))
+## 2. Data Sources
 
-            # -----------------------------
-            # 3. Convert datetime columns
-            # -----------------------------
-            reporting_df['Start_Time'] = pd.to_datetime(reporting_df['Start_Time'], errors='coerce')
-            reporting_df['End_Time'] = pd.to_datetime(reporting_df['End_Time'], errors='coerce')
-            reporting_df['Duration'] = (reporting_df['End_Time'] - reporting_df['Start_Time']).dt.total_seconds()
+- **Claims Table:** `Claims_Rework_ProcessTable last 10 days.csv`  
+  *Key columns:* ID,Run_Date,ProcessRunKey,PlanCode,ClaimID,ClaimStatus,specialty,discrepancy_type,StartDate,EndDate,Process_Status,Fallout_Reason,Memo_header,Memo_Description,Action,Remit_Code,DENYcode,CleanDate,Claim_Line,OverrideEdits,CotivityEdits,RequestID,PriorityID,ProjectID
 
-            # -----------------------------
-            # 4. Merge tables on ClaimID
-            # -----------------------------
-            merged_df = pd.merge(claims_df, reporting_df, left_on='ClaimID', right_on='Claim_ID', how='inner')
-            merged_df['Adjusted_Claim_Status'] = merged_df['Adjusted_Claim_Status'].str.strip().str.upper().fillna('UNKNOWN')
+- **Reporting Table:** `ReportingTable_claims_rework last 10 days.csv`  
+  *Key columns:* ID (int), Process_Run_Key (varchar), Process_Name (varchar), Task_Name (varchar), Plan_Name (varchar), Run_Date (datetime), Environment (varchar), Start_Time (datetime), End_Time (datetime), BreadCrumbs (varchar), Machine_Name (varchar), Status (varchar), Error_Line (varchar), Error_Desc (varchar), BOT_User_ID (varchar), BOT_Type (varchar), Claim_ID (varchar), Claim_Status (varchar), Adjusted_Claim_ID (varchar), Adjusted_Claim_Status (varchar), FormType (varchar), Memo_Header (varchar), Memo_Message (varchar), CleanDate (datetime), S_Claim_ID (varchar), S_Claim_Status (varchar), S_Reversed_Claim_ID (varchar), S_Reversed_Claim_Status (varchar), EnrollmentType (varchar), PayAmount (varchar), Processed_Claim_ID (varchar), Processed_Claim_Status (varchar)
 
-            # -----------------------------
-            # 5. Aggregate by RequestID (BOT_User_Count removed)
-            # -----------------------------
-            status_counts = merged_df.pivot_table(
-                index='RequestID',
-                columns='Adjusted_Claim_Status',
-                values='ClaimID',
-                aggfunc='count',
-                fill_value=0
-            )
+**Join Key:** `ClaimID` ↔ `Claim_ID` (inner join)
 
-            agg_metrics = merged_df.groupby('RequestID').agg(
-                Total_Claims=('ClaimID', 'count'),
-                PriorityID=('PriorityID', 'first'),
-                Total_Time_Seconds=('Duration', 'sum')
-            )
+---
 
-            agg_df = pd.concat([agg_metrics, status_counts], axis=1).reset_index()
-            agg_df.to_csv('aggregated_data.csv', index=False)
+## 3. Feature Engineering and final columns considered for training
+- **Input Features:**
+  - Total_Claims (numeric)
+  - PriorityID (label encoded)
+  - Each Status type count columns: ADJUCATED, COTIVDISC, DENIED, DENY, OPEN, P737095, P739803, PAID, PAY, PEND, UNKNOWN, VOID
+- **Target Variable:**
+  - Total_Time_Seconds
 
-            # Encode PriorityID
-            label_enc = LabelEncoder()
-            agg_df['PriorityID'] = label_enc.fit_transform(agg_df['PriorityID'].astype(str))
+``
+## 4. Model Performance
 
-            # -----------------------------
-            # 6. Prepare Features and Target
-            # -----------------------------
-            X_original = agg_df.drop(['RequestID', 'Total_Time_Seconds'], axis=1)
-            y = agg_df['Total_Time_Seconds']
+### 4.1 Metrics Table
+| Model            | MAE       | RMSE       | R²    |
+|------------------|-----------|-----------|-------|
+| **XGBoost**      | 114,999   | 237,510   | 0.9615 |
+| RandomForest     | 134,603   | 261,416   | 0.9534 |
+| GradientBoosting | 144,290   | 296,728   | 0.9399 |
+| Ridge            | 168,472   | 337,496   | 0.9223 |
+| ExtraTrees       | 165,253   | 385,512   | 0.8986 |
+| Lasso            | 225,953   | 536,036   | 0.8039 |
+| CatBoost         | 301,929   | 587,634   | 0.7643 |
+| HistGB           | 578,334   | 779,126   | 0.5857 |
+| LightGBM         | 574,109   | 790,132   | 0.5739 |
+| MLP              | 661,712   | 1,379,416 | -0.2987 |
 
-            # Scale features for training
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X_original)
+---
 
-            # Train/Test split (keep original and scaled)
-            X_train_scaled, X_test_scaled, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-            X_train_orig, X_test_orig, _, _ = train_test_split(X_original, y, test_size=0.2, random_state=42)
 
-            def seconds_to_hms(seconds):
-                hours = int(seconds // 3600)
-                minutes = int((seconds % 3600) // 60)
-                secs = int(seconds % 60)
-                return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+## 4.2 Why the Top 2 Models Perform Best
 
-            # -----------------------------
-            # 7. Models and Hyperparameter Tuning
-            # -----------------------------
-            models = {
-                'RandomForest': RandomForestRegressor(random_state=42),
-                'GradientBoosting': GradientBoostingRegressor(random_state=42),
-                'ExtraTrees': ExtraTreesRegressor(random_state=42),
-                'HistGB': HistGradientBoostingRegressor(random_state=42),
-                'MLP': MLPRegressor(max_iter=500, random_state=42),
-                'Ridge': Ridge(),
-                'Lasso': Lasso()
-            }
-            if xgb:
-                models['XGBoost'] = xgb.XGBRegressor(random_state=42)
-            if CatBoostRegressor:
-                models['CatBoost'] = CatBoostRegressor(verbose=0, random_state=42)
-            if LGBMRegressor:
-                models['LightGBM'] = LGBMRegressor(random_state=42)
+### 4.2.1 XGBoost — Why it’s #1 here
+**Summary:**  
+XGBoost tops the leaderboard (R² **0.9615**) because it captures **non‑linear interactions** among count‑style features (e.g., status pivots, `Total_Claims`) and a categorical priority signal, while controlling variance through regularization and tree‑wise subsampling.
 
-            param_grid = {
-                'RandomForest': {'n_estimators': [100, 200], 'max_depth': [None, 10]},
-                'GradientBoosting': {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1]},
-                'ExtraTrees': {'n_estimators': [100, 200], 'max_depth': [None, 10]},
-                'HistGB': {'max_iter': [100, 200], 'learning_rate': [0.05, 0.1]},
-                'MLP': {'hidden_layer_sizes': [(50,), (100,)], 'alpha': [0.0001, 0.001]},
-                'Ridge': {'alpha': [0.1, 1.0, 10.0]},
-                'Lasso': {'alpha': [0.001, 0.01, 0.1]}
-            }
-            if xgb:
-                param_grid['XGBoost'] = {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1]}
-            if CatBoostRegressor:
-                param_grid['CatBoost'] = {'iterations': [200, 500], 'learning_rate': [0.05, 0.1]}
-            if LGBMRegressor:
-                param_grid['LightGBM'] = {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1]}
+**Reasons it fits this dataset:**
+- **Handles tabular, mixed-scale features extremely well.**  
+  Our features are mostly small‑integer counts (per‑status claim tallies) plus an encoded `PriorityID`. Gradient boosting trees naturally model non-linear thresholds and interactions (e.g., *“high Total_Claims + many PEND + Priority=High”*).
+- **Strong bias–variance balance via regularization.**  
+  Parameters like `learning_rate`, `max_depth`, `reg_alpha`, `reg_lambda`, and `subsample/colsample_bytree` help avoid overfitting while still learning complex structure.
+- **Robust to outliers in the target.**  
+  Boosted trees can localize high‑duration pockets (heavy tails common in process times) without distorting the rest of the fit, improving RMSE.
+- **Additive improvements through boosting.**  
+  Iteratively correcting residuals is effective when simple splits explain part of the variance (e.g., status mix), but nuanced interactions remain.
+- **Efficient training and early stopping.**  
+  XGBoost’s histogram-based tree construction and early stopping (if enabled) quickly converge to a strong solution on moderate-sized tabular data.
 
-            results = {}
-            test_results = pd.DataFrame()
+**Observed outcomes in our run:**
+- **Lowest error:** MAE **114,999 sec**; RMSE **237,510 sec**  
+- **Best generalization:** Highest R² (**0.9615**), beating RandomForest by a **9.15% RMSE improvement** and **14.56% MAE improvement**
 
-            for name, model in models.items():
-                print(f"Training {name}...")
-                grid = GridSearchCV(model, param_grid[name], cv=3, scoring='r2', n_jobs=-1)
-                grid.fit(X_train_scaled, y_train)
-                best_model = grid.best_estimator_
+---
 
-                # Predict using DataFrame to avoid LightGBM warning
-                y_pred = best_model.predict(pd.DataFrame(X_test_scaled, columns=X_original.columns))
+### 4.2.2 RandomForest — Why it’s a strong runner‑up
+**Summary:**  
+RandomForest performs consistently well (R² **0.9534**) thanks to **bagging** and **feature randomness** that reduce variance and make it robust to noise and modest feature correlations.
 
-                # Combine predictions with original features
-                X_test_df = X_test_orig.copy()
-                X_test_df['Actual_Seconds'] = y_test.values
-                X_test_df['Predicted_Seconds'] = y_pred
-                X_test_df['Actual_HHMMSS'] = [seconds_to_hms(x) for x in y_test.values]
-                X_test_df['Predicted_HHMMSS'] = [seconds_to_hms(x) for x in y_pred]
-                X_test_df['Model'] = name
+**Reasons it fits this dataset:**
+- **Excellent default for heterogeneous tabular features.**  
+  Each tree handles discrete thresholds in count features and the encoded priority without requiring scaling or complex preprocessing.
+- **Variance reduction through bagging.**  
+  Bootstrapping rows + random feature subsets yield stable predictions even if some statuses are sparse or noisy over the last 10 days.
+- **Resilient to overfitting with limited tuning.**  
+  Compared with gradient boosting, RandomForest often succeeds with light hyperparameter work, which matches our modest grid.
+- **Interpretability via feature importance.**  
+  While not as granular as SHAP, impurity/perm-based importances give operations a quick read on influential signals (e.g., `Total_Claims`, key status counts).
 
-                # Append to combined results
-                test_results = pd.concat([test_results, X_test_df], axis=0)
+**Observed outcomes in our run:**
+- **Second-best across all metrics:** MAE **134,603 sec**; RMSE **261,416 sec**; R² **0.9534**  
+- Small gap to XGBoost suggests most structure is captured by tree splits; the extra boost iterations in XGBoost squeeze out the last mile of accuracy.
 
-                # Store performance metrics
-                results[name] = {
-                    'model': best_model,
-                    'MAE': mean_absolute_error(y_test, y_pred),
-                    'RMSE': np.sqrt(mean_squared_error(y_test, y_pred)),
-                    'R2': r2_score(y_test, y_pred)
-                }
 
-            # -----------------------------
-            # 8. Save Results
-            # -----------------------------
-            performance_df = pd.DataFrame(results).T[['MAE', 'RMSE', 'R2']]
-            performance_df.to_csv('model_performance_results.csv', index=True)
-            test_results.to_csv('predictions_with_original_features.csv', index=False)
-            performance_df.to_csv('performance_summary.csv', index=True)
 
-            # Plot performance
-            fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-            sns.barplot(x=performance_df.index, y=performance_df['MAE'], ax=ax[0])
-            ax[0].set_title('MAE by Model')
-            sns.barplot(x=performance_df.index, y=performance_df['RMSE'], ax=ax[1])
-            ax[1].set_title('RMSE by Model')
-            sns.barplot(x=performance_df.index, y=performance_df['R2'], ax=ax[2])
-            ax[2].set_title('R² by Model')
-            plt.tight_layout()
-            plt.savefig('model_performance.png')
+## 4.3 Understanding Evaluation Metrics
 
-            # Save best model
-            best_model_name = performance_df['R2'].idxmax()
-            best_model = results[best_model_name]['model']
-            joblib.dump(best_model, 'best_model.pkl')
+### ✅ R² (Coefficient of Determination)
+- **What it measures:**  
+  How well the model explains the variance in the target variable (`Total_Time_Seconds`).
+- **Interpretation:**  
+  - R² = 1 → Perfect prediction (model explains 100% of variance).
+  - R² = 0 → Model is no better than predicting the mean.
+  - R² < 0 → Model performs worse than a simple mean predictor.
+- **In our results:**  
+  - XGBoost: **0.9615** → Explains ~96% of variance (excellent fit).
+  - RandomForest: **0.9534** → Explains ~95% of variance.
+  - MLP: **-0.2987** → Worse than predicting the average (poor fit).
 
+---
+
+### ✅ RMSE (Root Mean Squared Error)
+- **What it measures:**  
+  The square root of the average squared difference between predicted and actual values.
+- **Interpretation:**  
+  - Penalizes **large errors more heavily** because of squaring.
+  - Lower RMSE = better accuracy.
+- **Units:** Same as the target (seconds).
+- **In our results:**  
+  - XGBoost: **237,510 sec (~66 hours)** average error magnitude.
+  - RandomForest: **261,416 sec (~72 hours)**.
+  - MLP: **1,379,416 sec (~383 hours)** → Very poor.
+
+---
+
+### ✅ MAE (Mean Absolute Error)
+- **What it measures:**  
+  The average absolute difference between predicted and actual values.
+- **Interpretation:**  
+  - Easier to interpret than RMSE because it’s a straight average.
+  - Less sensitive to outliers than RMSE.
+- **Units:** Same as the target (seconds).
+- **In our results:**  
+  - XGBoost: **114,999 sec (~32 hours)** average deviation.
+  - RandomForest: **134,603 sec (~37 hours)**.
+  - MLP: **661,712 sec (~184 hours)** → Very poor.
+
+---
+
+### ✅ Summary Table
+| Metric | What It Tells You |
+|--------|--------------------|
+| **R²** | How much variance in `Total_Time_Seconds` is explained by the model |
+| **RMSE** | Typical size of prediction error (penalizes big mistakes) |
+| **MAE** | Average prediction error (straightforward measure) |
+
+---
+
+**Why use all three?**
+- R² shows **overall explanatory power**.
+- RMSE and MAE show **error magnitude** (RMSE emphasizes big errors, MAE gives a balanced view).
+
+
+### 4.4 Ranking Diagram
+```markdown
+![Performace Graph](./model_performance.png)
+```
+## 5. Artifacts Produced
+- `aggregated_data.csv`
+- `model_performance_results.csv`
+- `performance_summary.csv`
+- `predictions_with_original_features.csv`
+- `model_performance.png`
+- `best_model.pkl`
+
+---
